@@ -34,24 +34,24 @@ var (
 var errorCheckSum error = errors.New("file content checksum failure")
 
 type Httpdl struct {
-    url        string
+    Url        string  `json:"url"`
     fd        *os.File 
-    file       string
-    par        int
-    len        int64
-    rsize      uint
-    maxconn    int
-    ips        []string
-    parts      []HttpdlPart
-    resumable  bool
+    File       string  `json:"filename"`
+    Par        int     `json:"partnum"`
+    Len        int64   `json:"filelen"`
+    Rsize      uint    `json:"range-size"`
+    Maxconn    int     `json:"maxconn"`
+    connsem    chan bool
+    errs       chan error
+    ips        []string  
+    Parts      []HttpdlPart  `json:"parts"`
+    resumable  bool  
     skipTls    bool
 }
 
 type HttpdlPart struct {
-	Url       string
-    File      string
-	RangeFrom int64
-	RangeTo   int64
+	RangeFrom int64  `json:"from"`
+	RangeTo   int64  `json:"to"`
 
     err       error
     retry     int
@@ -74,6 +74,7 @@ func dlPart(dl *Httpdl) []HttpdlPart {
         }
 
         parts[i].Url = dl.url
+        parts[i].File = dl.file
     }
 
     return parts
@@ -172,6 +173,8 @@ func New(url string, rangeSize uint, connNum int, skipTls bool) (dl *Httpdl, err
     dl.rsize = rangeSize
     dl.maxconn = connNum
 
+    dl.connsem = make(chan bool, dl.maxconn)
+
     err = dlInfo(dl)
     if err != nil {
         return nil, err
@@ -182,75 +185,88 @@ func New(url string, rangeSize uint, connNum int, skipTls bool) (dl *Httpdl, err
         return nil, err
     }
 
+    dl.errs = make(chan error, len(dl.parts))
+
     return dl, nil
 }
 
+func (dl *Httpdl) dlRecord() (err error) {
+    b, err := json.Marshal(dl)
+    if err != nil {
+        return err
+    }
+
+    stateFile, err := filepath.Abs(filepath.Join(os.Getenv("HOME"), dataFolder, filepath.Base(dl.Url) + ".status"))
+    if err != nil {
+        return err
+    }
+
+    return ioutil.WriteFile(stateFile, b, 0644)
+}
+
 func (dl *Httpdl) download(part *HttpdlPart) {
-    
+    dl.connsem <- true
+
+    defer func() { <-dl.connsem }()
+
+    var ranges string
+    if part.RangeTo != -1 {
+		ranges = fmt.Sprintf("bytes=%d-%d", part.RangeFrom, part.RangeTo)
+	} else {
+		ranges = fmt.Sprintf("bytes=%d-", part.RangeFrom) //get all
+	}
+
+    req, err := http.NewRequest("GET", part.Url, nil)
+    if err != nil {
+        part.err = err
+        return
+    }
+
+    if dl.par > 1 {
+		req.Header.Add("Range", ranges)
+	}
+
+    resp, err := client.Do(req)
+    if err != nil {
+        part.err = err
+		return
+	}
+
+    defer resp.Body.Close()
+
+    for {
+        w, err := resp.Body.Read(buf)
+
+        dl.fd.WriteAt(buf[:w], part.RangeFrom)
+
+        part.RangeFrom += int64(w)
+
+        if err != nil {
+            part.err = err
+			return
+		}
+
+        if part.RangeTo != -1 && part.RangeFrom > part.RangeTo {
+            return 
+        }
+    }
+
 }
 
 func (dl *Httpdl) Do() {
-    var wg sync.WaitGroup
-
-    consem := make(chan bool, dl.maxconn)
 
     for i, _ := range dl.parts {
-        wg.Add(1)
-
-        go func(dl *Httpdl, part *HttpdlPart) {
-            defer wg.Done()
-
-            consem <- true
-
-	        defer func() { <-consem }()
-
-            var ranges string
-            if part.RangeTo != -1 {
-				ranges = fmt.Sprintf("bytes=%d-%d", part.RangeFrom, part.RangeTo)
-			} else {
-				ranges = fmt.Sprintf("bytes=%d-", part.RangeFrom) //get all
-			}
-
-            req, err := http.NewRequest("GET", part.Url, nil)
-            if err != nil {
-                part.err = err
-                return
-            }
-
-            if dl.par > 1 {
-				req.Header.Add("Range", ranges)
-			}
-
-            resp, err := client.Do(req)
-            if err != nil {
-                part.err = err
-				return
-			}
-
-            defer resp.Body.Close()
-
-            var buf = make([]byte, bufSize)
-
-            for {
-                w, err := resp.Body.Read(buf)
-
-                dl.fd.WriteAt(buf[:w], part.RangeFrom)
-
-                part.RangeFrom += int64(w)
-
-                if err != nil {
-                    part.err = err
-			        return
-		        }
-
-                if part.RangeTo != -1 && part.RangeFrom > part.RangeTo {
-                    return 
-                }
-            }
-        }(dl, &dl.parts[i])
+        go dl.download(&dl.parts[i])
     }
 
-    wg.Wait()
+    for i := 0; i < len(dl.parts); i++ {
+        err := <-dl.errs
+
+        //64mb finished download, record json downloading info
+        if err == nil {
+            dl.dlRecord()
+        }
+    }
 
     return
 }

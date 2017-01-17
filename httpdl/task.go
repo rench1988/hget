@@ -35,8 +35,28 @@ func DlTaskPrint() {
 	return     
 }
 
-func DlTaskResume() {
-    
+func DlTaskResume(url string) {
+    stateFile, err := filepath.Abs(filepath.Join(os.Getenv("HOME"), dataFolder, filepath.Base(url) + ".status"))
+    if err != nil {
+        fmt.Println("failed get state file name", err)
+        return
+    }
+
+    bytes, err := ioutil.ReadFile(stateFile)
+	if err != nil {
+        fmt.Println("failed read state file name", err)
+		return 
+	}
+
+    dl := new(Httpdl)
+
+    err = json.Unmarshal(bytes, dl)
+    if err != nil {
+        fmt.Println("failed unmarshal json data in state file", err)
+        return
+    }
+
+    dl.Do()
 }
 
 func DlTaskDo(url string, rangeSize uint, connNum int, skiptls bool) {
