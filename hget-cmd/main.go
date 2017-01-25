@@ -44,12 +44,27 @@ func main() {
 
 	switch command {
 	case "tasks":
-		httpdl.DlTaskPrint()
+		if err := httpdl.DlTaskPrint(); err != nil {
+			handlerError(err)
+		}
 	case "resume":
-		httpdl.DlTaskResume()
+		if len(args) < 2 {
+			usage()
+			os.Exit(1)
+		}
+		if err := httpdl.DlTaskResume(args[1]); err != nil {
+			handlerError(err)
+		}
 	default:
-		httpdl.DlTaskDo(command, *rangeSize, int(*connNum), *skipTls)
+		if err := httpdl.DlTaskDo(nil, command, *rangeSize, int(*connNum), *skipTls); err != nil {
+			handlerError(err)
+		}
 	}
+}
+
+func handlerError(err error) {
+	fmt.Println(err)
+	os.Exit(1)
 }
 
 func usage() {

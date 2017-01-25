@@ -1,24 +1,23 @@
 package httpdl
 
 import (
-    "io/ioutil"
-    "path/filepath"
-    "os"
-    "fmt"
-    "strings"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 const (
-    dataFolder = ".hget/"
+	dataFolder = ".hget/"
 )
 
-
-
-func DlTaskPrint() {
+func DlTaskPrint() error {
 	downloading, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), dataFolder))
 	if err != nil {
-		fmt.Println("Failed read directory", err)
-        return
+		return errors.New("Failed read directory: " + err.Error())
 	}
 
 	folders := make([]string, 0)
@@ -32,45 +31,55 @@ func DlTaskPrint() {
 	fmt.Printf("Currently on going download: \n")
 	fmt.Println(folderString)
 
-	return     
+	return nil
 }
 
-func DlTaskResume(url string) {
-    stateFile, err := filepath.Abs(filepath.Join(os.Getenv("HOME"), dataFolder, filepath.Base(url) + ".status"))
-    if err != nil {
-        fmt.Println("failed get state file name", err)
-        return
-    }
-
-    bytes, err := ioutil.ReadFile(stateFile)
+func DlTaskResume(url string) error {
+	stateFile, err := filepath.Abs(filepath.Join(os.Getenv("HOME"), dataFolder, filepath.Base(url)+".status"))
 	if err != nil {
-        fmt.Println("failed read state file name", err)
-		return 
+		return errors.New("failed get state file name: " + err.Error())
 	}
 
-    dl := new(Httpdl)
+	bytes, err := ioutil.ReadFile(stateFile)
+	if err != nil {
+		return errors.New("failed read state file name: " + err.Error())
+	}
 
-    err = json.Unmarshal(bytes, dl)
-    if err != nil {
-        fmt.Println("failed unmarshal json data in state file", err)
-        return
-    }
+	dl := new(Httpdl)
 
-    dl.Do()
+	err = json.Unmarshal(bytes, dl)
+	if err != nil {
+		return errors.New("failed unmarshal json data in state file: " + err.Error())
+	}
+
+	dl.dlRepart()
+
+	dl.connsem = make(chan bool, dl.Maxconn)
+	dl.errs = make(chan error, len(dl.Parts))
+	dl.resumable = true
+	dl.skipTls = true
+
+	if err = dlFile(dl); err != nil {
+		return err
+	}
+
+	fmt.Println(dl)
+
+	return dl.Do()
 }
 
-func DlTaskDo(url string, rangeSize uint, connNum int, skiptls bool) {
-    dltask, err := New(url, rangeSize, connNum, skiptls)
-    if err != nil {
-        fmt.Println("failed create http download task", err)
-        return
-    }
+func DlTaskDo(dl *Httpdl, url string, rangeSize uint, connNum int, skiptls bool) error {
+	var (
+		dltask *Httpdl
+		err    error
+	)
 
-    dltask.Do()
+	if dl == nil {
+		dltask, err = New(url, rangeSize, connNum, skiptls)
+		if err != nil {
+			return errors.New("failed create http download task: " + err.Error())
+		}
+	}
 
-    for i, p := range dltask.parts {
-        fmt.Println(i, p.err)
-    }
+	return dltask.Do()
 }
-
-
